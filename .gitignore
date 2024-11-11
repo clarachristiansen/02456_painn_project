@@ -3,3 +3,4 @@ data/processed/*
 data/raw/*
 *.out
 *.egg-info
+myenv/*
