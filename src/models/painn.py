@@ -175,13 +175,17 @@ class PaiNN(nn.Module):
         left_1 = v_j[js,:,:] * split_1.unsqueeze(2) #v_j.shape torch.Size([1798, 128, 3]) and split_1.shape torch.Size([1798, 128]) 
         # Should split_1 be multiplied on each x,y,z?
         epsilon = 1e-8
-        right_1 = split_3.unsqueeze(1) * (r_ij[:,2:] / (torch.linalg.norm(r_ij[:,2:],axis=1).unsqueeze(1) + epsilon).unsqueeze(-1)).unsqueeze(-1)
+        right_1 = (split_3.unsqueeze(2) * (r_ij[:,2:] / (torch.linalg.norm(r_ij[:,2:],axis=1).unsqueeze(1) + epsilon)).unsqueeze(1))
         left_2 = left_1 + right_1
-        left_2
 
+        # Sum over j
+        v1 = torch.zeros_like(v_j)
+        v2 = v1.index_add_(0, js, left_2)
 
-        pass
+        s1 = torch.zeros_like(s_j)
+        s2 = s1.index_add_(0, js, split_2)
 
+        return v2, s2
        
         
         # Should this be made as an init and forward as well? Not necessary
