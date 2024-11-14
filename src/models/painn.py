@@ -34,11 +34,26 @@ class PaiNN(nn.Module):
         self.num_message_passing_layers = num_message_passing_layers
         self.num_features = num_features
         self.num_outputs = num_outputs
-        self.num_rbf_features = num_rbf_features
+        self.num_rbf_features = num_rbf_features 
         self.num_unique_atoms = num_unique_atoms
         self.cutoff_dist = cutoff_dist
 
         self.embedding_matrix = nn.Embedding(self.num_unique_atoms, self.num_features)
+
+        self.message1 = Message(self.num_features, self.cutoff_dist)
+        self.update1 = Update(self.num_features)
+
+        self.message2 = Message(self.num_features, self.cutoff_dist)
+        self.update2 = Update(self.num_features)
+
+        self.message3 = Message(self.num_features, self.cutoff_dist)
+        self.update3 = Update(self.num_features)
+
+        self.last_mlp = nn.Sequential(
+            nn.Linear(self.num_features, self.num_features),
+            nn.SiLU(),
+            nn.Linear(self.num_features, self.num_outputs)
+        )
         #raise NotImplementedError
 
     #def parameters(self):
@@ -70,18 +85,40 @@ class PaiNN(nn.Module):
             A torch.FloatTensor of size [num_nodes, num_outputs] with atomic
             contributions to the overall molecular property prediction.
         """
-        s_i_0 = self.embedding_matrix(atoms)
-        v_i_0 = torch.zeros((atoms.shape[0], self.num_features, 3))  
+        
+        v_0 = torch.zeros((atoms.shape[0], self.num_features, 3))  
+        s_0 = self.embedding_matrix(atoms)
 
         # Calculate vector between all nodes of same graph (molecule)
-        r_ij= self.calculate_rij(atom_positions, graph_indexes, self.cutoff_dist)
+        r = self.calculate_rij(atom_positions, graph_indexes, self.cutoff_dist)
+        
 
-        s_i_1, v_i_1 = self.message(v_i_0, s_i_0, r_ij)
-        s_i_2, v_i_2 = self.update(v_i_1, s_i_1)
+        v, s = self.message1(v_0, s_0, r)
+        s_old = s + s_0 # skip connections
+        v_old = v + v_0 # v_0 is a null vector - doesnt matter
+        v, s = self.update1(v_old, s_old)
+        s_old = s + s_old # skip connections
+        v_old = v + v_old
 
+        v, s = self.message2(v_old, s_old, r)
+        s_old = s + s_old # skip connections
+        v_old = v + v_old
+        v, s = self.update2(v_old, s_old)
+        s_old = s + s_old # skip connections
+        v_old = v + v_old
 
-        # Cap on distance
-        raise NotImplementedError
+        v, s = self.message3(v_old, s_old, r)
+        s_old = s + s_old # skip connections
+        v_old = v + v_old
+        v, s = self.update3(v_old, s_old)
+        s_old = s + s_old # skip connections
+        v_old = v + v_old
+
+        E = self.last_mlp(s_old)
+
+        return E
+        
+
     # REWRITE CALCULATE Rij to matrix format where i and j are row and column number and the element is the vector (three dimensions deep)
     def calculate_rij(self, atom_positions, graph_indexes, threshold):
         #mol1: 0->1, 0->2, 0->3 ... 1->0, 1->2, 1->3 ...
@@ -89,13 +126,13 @@ class PaiNN(nn.Module):
         # Format:
         # Index i [0,0,0,0,..1,1,1,1,..2,2,2,2...]
         # Index j [0,1,2,...]
-        # x for r_ij
-        # y for r_ij
-        # z for r_ij
+        # x for r
+        # y for r
+        # z for r
 
         index_i = torch.tensor([])
         index_j = torch.tensor([])
-        r_ij = 0
+        r = 0
 
         j = torch.arange(len(atom_positions))
         for i in range(len(atom_positions)):
@@ -108,126 +145,103 @@ class PaiNN(nn.Module):
             index_i = torch.cat([index_i, torch.tensor([int(i)] * sum(distance_mask))], dim=0)
             index_j = torch.cat([index_j, js[distance_mask]], dim=0)
             if i ==0:
-                r_ij = vectors[distance_mask]
+                r = vectors[distance_mask]
             else:
-                r_ij = torch.cat([r_ij, vectors[distance_mask]])
-        adjacency_matrix = torch.cat([index_i.unsqueeze(1), index_j.unsqueeze(1), r_ij], dim=1)
+                r = torch.cat([r, vectors[distance_mask]])
+        adjacency_matrix = torch.cat([index_i.unsqueeze(1), index_j.unsqueeze(1), r], dim=1)
         return adjacency_matrix
-    
-    #def calculate_rij_2(self, atom_positions, graph_indexes, threshold):
 
-        r_ij = torch.empty((len(atom_positions), len(atom_positions), 3))
+class Message(nn.Module):
+    def __init__(self, num_features, cutoff_dist):
+        super().__init__()
+        self.num_features = num_features
+        self.cutoff_dist = cutoff_dist
 
-        j = torch.arange(len(atom_positions))
-        for i in range(len(atom_positions)):
-            molecule_mask = graph_indexes == graph_indexes[0]
-            js = j[molecule_mask]
-            molecule_positions = atom_positions[molecule_mask]
-            vectors = atom_positions[i] - molecule_positions
-
-            distance_mask = torch.linalg.norm(vectors, axis=1) < threshold
-            r_ij[i, js[distance_mask], :] = vectors[distance_mask]
-        return r_ij
-
-
-    def RBF(self, r_ij):
-        vector_r_ij = r_ij[:,2:]
-        norm_r_ij = torch.linalg.norm(vector_r_ij, axis=1).unsqueeze(1) # normalize each r_ij vector not all into 1 number
-        frac = torch.pi / self.cutoff_dist
-        n = torch.arange(1,21).float().reshape(1, 20)
-        epsilon = 1e-8
-        rbf_result = torch.sin(n * frac * norm_r_ij) / (norm_r_ij + epsilon)
-        return rbf_result
-    
-    def cosine_cutoff(self, r_ij): # OBS DONT KNOW IF IT IS CUTOFF_DISTANCE OR ANOTHER CUTOFF PARAMETER
-         # remember cosine cutoff: https://ml4chem.dev/_modules/ml4chem/atomistic/features/cutoff.html#Cosine has code
-        cutoff_array = 0.5 * (torch.cos(torch.pi * r_ij / self.cutoff_dist) + 1.0)
-        cutoff_array *= (r_ij < self.cutoff_dist).float()
-        return cutoff_array
-    
-
-        """cutoff_array = torch.where(
-        r_ij < self.cutoff_dist,
-        0.5 * (torch.cos(torch.pi * r_ij / self.cutoff_dist) + 1.0),
-        0.0)
-        return cutoff_array"""
-
-#class Message(nn.Module):
-#    def __init__(self, n_features, n_edges, cutoff_dist):
-#        self.n_features = n_features
-#        self.n_edges = n_edges
-#        self.cutoff_dist = cutoff_dist
-
-    
-        
-    def message(self, v_j, s_j, r_ij):
-        n_features = 128
-        js=r_ij[:, 1].int()
-
-        s_path = nn.Sequential(
+        self.s_path = nn.Sequential( # rename
             nn.Linear(128, 128, True),
             nn.SiLU(),
             nn.Linear(128, 384))
-        r_ij_path = nn.Sequential(
+        self.r_path = nn.Sequential(
             nn.Linear(20, 384, True))
-
-        ### FORWARD PASS IN MESSAGE:
-        phi = s_path(s_j)
-        rbf_output = self.RBF(r_ij)
-        W = self.cosine_cutoff(r_ij_path(rbf_output))
-        split = phi[js, :] * W # phi[j_index,:]
-        split_1 = split[:,:n_features]
-        split_2 = split[:,n_features:n_features*2]
-        split_3 = split[:,n_features*2:]
-
-        # Write it more compressed
-        left_1 = v_j[js,:,:] * split_1.unsqueeze(2) #v_j.shape torch.Size([1798, 128, 3]) and split_1.shape torch.Size([1798, 128]) 
-        # Should split_1 be multiplied on each x,y,z?
+        
+    def RBF(self, r):
+        vector_r = r[:,2:]
+        norm_r = torch.linalg.norm(vector_r, axis=1).unsqueeze(1) # normalize each r vector not all into 1 number
+        frac = torch.pi / self.cutoff_dist
+        n = torch.arange(1,21).float().reshape(1, 20)
         epsilon = 1e-8
-        right_1 = (split_3.unsqueeze(2) * (r_ij[:,2:] / (torch.linalg.norm(r_ij[:,2:],axis=1).unsqueeze(1) + epsilon)).unsqueeze(1))
+        rbf_result = torch.sin(n * frac * norm_r) / (norm_r + epsilon)
+        return rbf_result
+    
+    def cosine_cutoff(self, r): # OBS DONT KNOW IF IT IS CUTOFF_DISTANCE OR ANOTHER CUTOFF PARAMETER
+         # remember cosine cutoff: https://ml4chem.dev/_modules/ml4chem/atomistic/features/cutoff.html#Cosine has code
+        cutoff_array = 0.5 * (torch.cos(torch.pi * r / self.cutoff_dist) + 1.0)
+        cutoff_array *= (r < self.cutoff_dist).float()
+        return cutoff_array
+        
+    def forward(self, v, s, r):
+        js = r[:, 1].int() # r holds the following col: i, j, rx, ry, rz
+        r_vectors = r[:,2:]
+        phi = self.s_path(s)
+        W = self.cosine_cutoff(self.r_path(self.RBF(r_vectors)))
+
+        pre_split = phi[js, :] * W
+
+        split_1 = pre_split[:,:self.num_features]
+        split_2 = pre_split[:,self.num_features:self.num_features*2]
+        split_3 = pre_split[:,self.num_features*2:]
+
+        epsilon = 1e-8
+        left_1 = v[js,:,:] * split_1.unsqueeze(2) 
+        right_1 = (split_3.unsqueeze(2) * (r_vectors / (torch.linalg.norm(r_vectors, axis=1).unsqueeze(1) + epsilon)).unsqueeze(1))
         left_2 = left_1 + right_1
 
         # Sum over j
-        v1 = torch.zeros_like(v_j)
-        v2 = v1.index_add_(0, js, left_2)
+        v1 = torch.zeros_like(v)
+        delta_v = v1.index_add_(0, js, left_2)
 
-        s1 = torch.zeros_like(s_j)
-        s2 = s1.index_add_(0, js, split_2)
+        s1 = torch.zeros_like(s)
+        delta_s = s1.index_add_(0, js, split_2)
 
-        return s2, v2
-    
-    def update(self, v_j, s_j):
-        # MLP
-        n_features = 128
-        mlp_update = nn.Sequential(
-            nn.Linear(n_features * 2, n_features),
+        return delta_v, delta_s
+
+class Update(nn.Module):
+    def __init__(self, num_features):
+        super().__init__()
+        self.num_features = num_features
+
+        self.mlp_update = nn.Sequential(
+            nn.Linear(num_features * 2, num_features),
             nn.SiLU(),
-            nn.Linear(n_features, n_features * 3)
+            nn.Linear(num_features, num_features * 3)
         )
-        
-        # U pass
-        U_x = nn.Linear(n_features, n_features)
-        U_y = nn.Linear(n_features, n_features)
-        U_z = nn.Linear(n_features, n_features)
-        Uv = torch.stack([U_x(v_j[:,:,0]), U_y(v_j[:,:,1]), U_z(v_j[:,:,2])], dim=2)
 
-        V_x = nn.Linear(n_features, n_features)
-        V_y = nn.Linear(n_features, n_features)
-        V_z = nn.Linear(n_features, n_features)
-        Vv = torch.stack([V_x(v_j[:,:,0]), V_y(v_j[:,:,1]), V_z(v_j[:,:,2])], dim=2)
+        self.U_x = nn.Linear(self.num_features, self.num_features)
+        self.U_y = nn.Linear(self.num_features, self.num_features)
+        self.U_z = nn.Linear(self.num_features, self.num_features)
+
+        self.V_x = nn.Linear(self.num_features, self.num_features)
+        self.V_y = nn.Linear(self.num_features, self.num_features)
+        self.V_z = nn.Linear(self.num_features, self.num_features)
+    
+    def forward(self, v, s):
+        # U pass
+        v_x, v_y, v_z = v[:,:,0], v[:,:,1], v[:,:,2]
+        Uv = torch.stack([self.U_x(v_x), self.U_y(v_y), self.U_z(v_z)], dim=2)
+        Vv = torch.stack([self.V_x(v_x), self.V_y(v_y), self.V_z(v_z)], dim=2)
         Vv_norm = torch.linalg.norm(Vv, dim=2)
 
-        mlp_input = torch.hstack([Vv_norm, s_j])
-        mlp_result = mlp_update(mlp_input)
+        mlp_input = torch.hstack([Vv_norm, s])
+        mlp_result = self.mlp_update(mlp_input)
         
-        a_vv = mlp_result[:,:n_features]
-        a_sv = mlp_result[:,n_features:n_features*2]
-        a_ss = mlp_result[:,n_features*2:]
+        a_vv = mlp_result[:,:self.num_features]
+        a_sv = mlp_result[:,self.num_features:self.num_features*2]
+        a_ss = mlp_result[:,self.num_features*2:]
 
         delta_v = a_vv.unsqueeze(-1) * Uv
         
         dot_prod = torch.sum(Uv * Vv, dim=2) # dot product
         delta_s = dot_prod * a_sv + a_ss
 
-        return delta_s, delta_v
+        return delta_v, delta_s
 
