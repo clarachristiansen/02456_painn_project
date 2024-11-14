@@ -53,7 +53,7 @@ class PaiNN(nn.Module):
     ) -> torch.FloatTensor:
         """
         Forward pass of PaiNN. Includes the readout network highlighted in blue
-        in Figure 2 in (Schütt et al., 2021) with normal linear layers which is
+        in Figure 2 in (Schütt et al., 2021) with normal U layers which is
         used for predicting properties as sums of atomic contributions. The
         post-processing and final sum is perfomed with
         src.models.AtomwisePostProcessing.
@@ -76,7 +76,8 @@ class PaiNN(nn.Module):
         # Calculate vector between all nodes of same graph (molecule)
         r_ij= self.calculate_rij(atom_positions, graph_indexes, self.cutoff_dist)
 
-        round1 = self.message(v_i_0, s_i_0, r_ij)
+        s_i_1, v_i_1 = self.message(v_i_0, s_i_0, r_ij)
+        s_i_2, v_i_2 = self.update(v_i_1, s_i_1)
 
 
         # Cap on distance
@@ -150,6 +151,14 @@ class PaiNN(nn.Module):
         0.5 * (torch.cos(torch.pi * r_ij / self.cutoff_dist) + 1.0),
         0.0)
         return cutoff_array"""
+
+#class Message(nn.Module):
+#    def __init__(self, n_features, n_edges, cutoff_dist):
+#        self.n_features = n_features
+#        self.n_edges = n_edges
+#        self.cutoff_dist = cutoff_dist
+
+    
         
     def message(self, v_j, s_j, r_ij):
         n_features = 128
@@ -185,10 +194,40 @@ class PaiNN(nn.Module):
         s1 = torch.zeros_like(s_j)
         s2 = s1.index_add_(0, js, split_2)
 
-        return v2, s2
-       
+        return s2, v2
+    
+    def update(self, v_j, s_j):
+        # MLP
+        n_features = 128
+        mlp_update = nn.Sequential(
+            nn.Linear(n_features * 2, n_features),
+            nn.SiLU(),
+            nn.Linear(n_features, n_features * 3)
+        )
         
-        # Should this be made as an init and forward as well? Not necessary
+        # U pass
+        U_x = nn.Linear(n_features, n_features)
+        U_y = nn.Linear(n_features, n_features)
+        U_z = nn.Linear(n_features, n_features)
+        Uv = torch.stack([U_x(v_j[:,:,0]), U_y(v_j[:,:,1]), U_z(v_j[:,:,2])], dim=2)
 
-        pass
+        V_x = nn.Linear(n_features, n_features)
+        V_y = nn.Linear(n_features, n_features)
+        V_z = nn.Linear(n_features, n_features)
+        Vv = torch.stack([V_x(v_j[:,:,0]), V_y(v_j[:,:,1]), V_z(v_j[:,:,2])], dim=2)
+        Vv_norm = torch.linalg.norm(Vv, dim=2)
+
+        mlp_input = torch.hstack([Vv_norm, s_j])
+        mlp_result = mlp_update(mlp_input)
+        
+        a_vv = mlp_result[:,:n_features]
+        a_sv = mlp_result[:,n_features:n_features*2]
+        a_ss = mlp_result[:,n_features*2:]
+
+        delta_v = a_vv.unsqueeze(-1) * Uv
+        
+        dot_prod = torch.sum(Uv * Vv, dim=2) # dot product
+        delta_s = dot_prod * a_sv + a_ss
+
+        return delta_s, delta_v
 
