@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import time
 
 
 class PaiNN(nn.Module):
@@ -15,6 +16,7 @@ class PaiNN(nn.Module):
         num_rbf_features: int = 20,
         num_unique_atoms: int = 100,
         cutoff_dist: float = 5.0,
+        device = 'cpu'
     ) -> None:
         """
         Args:
@@ -37,17 +39,18 @@ class PaiNN(nn.Module):
         self.num_rbf_features = num_rbf_features 
         self.num_unique_atoms = num_unique_atoms
         self.cutoff_dist = cutoff_dist
+        self.device = device
 
         self.embedding_matrix = nn.Embedding(self.num_unique_atoms, self.num_features)
 
-        self.message1 = Message(self.num_features, self.cutoff_dist)
-        self.update1 = Update(self.num_features)
+        self.message1 = Message(self.num_features, self.cutoff_dist, self.device)
+        self.update1 = Update(self.num_features, self.device)
 
-        self.message2 = Message(self.num_features, self.cutoff_dist)
-        self.update2 = Update(self.num_features)
+        self.message2 = Message(self.num_features, self.cutoff_dist, self.device)
+        self.update2 = Update(self.num_features, self.device)
 
-        self.message3 = Message(self.num_features, self.cutoff_dist)
-        self.update3 = Update(self.num_features)
+        self.message3 = Message(self.num_features, self.cutoff_dist, self.device)
+        self.update3 = Update(self.num_features, self.device)
 
         self.last_mlp = nn.Sequential(
             nn.Linear(self.num_features, self.num_features),
@@ -86,12 +89,13 @@ class PaiNN(nn.Module):
             contributions to the overall molecular property prediction.
         """
         
-        v_0 = torch.zeros((atoms.shape[0], self.num_features, 3))  
-        s_0 = self.embedding_matrix(atoms)
+        v_0 = torch.zeros((atoms.shape[0], self.num_features, 3), device=self.device)  
+        s_0 = self.embedding_matrix(atoms).to(self.device)
 
         # Calculate vector between all nodes of same graph (molecule)
+        start_time = time.time()
         r = self.calculate_rij(atom_positions, graph_indexes, self.cutoff_dist)
-        
+        print("--- %s seconds ---" % (time.time() - start_time))
 
         v, s = self.message1(v_0, s_0, r)
         s_old = s + s_0 # skip connections
@@ -115,11 +119,13 @@ class PaiNN(nn.Module):
         v_old = v + v_old
 
         E = self.last_mlp(s_old)
+        print("--- %s seconds ---" % (time.time() - start_time))
 
         return E
         
 
     # REWRITE CALCULATE Rij to matrix format where i and j are row and column number and the element is the vector (three dimensions deep)
+    
     def calculate_rij(self, atom_positions, graph_indexes, threshold):
         #mol1: 0->1, 0->2, 0->3 ... 1->0, 1->2, 1->3 ...
         # what is missing is the index of the atoms and the adjacency matrix with 3 rows, index1, index2, vector rij.
@@ -130,11 +136,11 @@ class PaiNN(nn.Module):
         # y for r
         # z for r
 
-        index_i = torch.tensor([])
-        index_j = torch.tensor([])
+        index_i = torch.tensor([], device=self.device)
+        index_j = torch.tensor([], device=self.device)
         r = 0
 
-        j = torch.arange(len(atom_positions))
+        j = torch.arange(len(atom_positions),  device=self.device)
         for i in range(len(atom_positions)):
             molecule_mask = graph_indexes == graph_indexes[i]
             js = j[molecule_mask]
@@ -142,7 +148,7 @@ class PaiNN(nn.Module):
             vectors = atom_positions[i] - molecule_positions
 
             distance_mask = torch.linalg.norm(vectors, axis=1) < threshold
-            index_i = torch.cat([index_i, torch.tensor([int(i)] * sum(distance_mask))], dim=0)
+            index_i = torch.cat([index_i, torch.tensor([int(i)] * sum(distance_mask),  device=self.device)], dim=0)
             index_j = torch.cat([index_j, js[distance_mask]], dim=0)
             if i ==0:
                 r = vectors[distance_mask]
@@ -152,10 +158,11 @@ class PaiNN(nn.Module):
         return adjacency_matrix
 
 class Message(nn.Module):
-    def __init__(self, num_features, cutoff_dist):
+    def __init__(self, num_features, cutoff_dist, device):
         super().__init__()
         self.num_features = num_features
         self.cutoff_dist = cutoff_dist
+        self.device = device
 
         self.s_path = nn.Sequential( # rename
             nn.Linear(128, 128, True),
@@ -168,7 +175,7 @@ class Message(nn.Module):
         vector_r = r[:,2:]
         norm_r = torch.linalg.norm(vector_r, axis=1).unsqueeze(1) # normalize each r vector not all into 1 number
         frac = torch.pi / self.cutoff_dist
-        n = torch.arange(1,21).float().reshape(1, 20)
+        n = torch.arange(1,21, device=self.device).float().reshape(1, 20)
         epsilon = 1e-8
         rbf_result = torch.sin(n * frac * norm_r) / (norm_r + epsilon)
         return rbf_result
@@ -206,9 +213,10 @@ class Message(nn.Module):
         return delta_v, delta_s
 
 class Update(nn.Module):
-    def __init__(self, num_features):
+    def __init__(self, num_features, device):
         super().__init__()
         self.num_features = num_features
+        self.device = device
 
         self.mlp_update = nn.Sequential(
             nn.Linear(num_features * 2, num_features),
@@ -216,19 +224,14 @@ class Update(nn.Module):
             nn.Linear(num_features, num_features * 3)
         )
 
-        self.U_x = nn.Linear(self.num_features, self.num_features)
-        self.U_y = nn.Linear(self.num_features, self.num_features)
-        self.U_z = nn.Linear(self.num_features, self.num_features)
-
-        self.V_x = nn.Linear(self.num_features, self.num_features)
-        self.V_y = nn.Linear(self.num_features, self.num_features)
-        self.V_z = nn.Linear(self.num_features, self.num_features)
+        self.U = nn.Linear(self.num_features, self.num_features)
+        self.V = nn.Linear(self.num_features, self.num_features)
     
     def forward(self, v, s):
         # U pass
-        v_x, v_y, v_z = v[:,:,0], v[:,:,1], v[:,:,2]
-        Uv = torch.stack([self.U_x(v_x), self.U_y(v_y), self.U_z(v_z)], dim=2)
-        Vv = torch.stack([self.V_x(v_x), self.V_y(v_y), self.V_z(v_z)], dim=2)
+        v_permuted = torch.permute(v, (0,2,1))
+        Uv = torch.permute(self.U(v_permuted), (0,2,1))
+        Vv = torch.permute(self.V(v_permuted), (0,2,1))
         Vv_norm = torch.linalg.norm(Vv, dim=2)
 
         mlp_input = torch.hstack([Vv_norm, s])
