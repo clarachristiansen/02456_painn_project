@@ -45,7 +45,7 @@ def cli():
 def main():
     args = cli()
     seed_everything(args.seed)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'mps'# if torch.cuda.is_available() else 'cpu'
 
     dm = QM9DataModule(
         target=args.target,
@@ -70,6 +70,7 @@ def main():
         num_rbf_features=args.num_rbf_features,
         num_unique_atoms=args.num_unique_atoms,
         cutoff_dist=args.cutoff_dist,
+        device=device
     )
     post_processing = AtomwisePostProcessing(
         args.num_outputs, y_mean, y_std, atom_refs
