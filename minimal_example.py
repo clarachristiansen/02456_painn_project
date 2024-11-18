@@ -6,6 +6,7 @@ properties) is computed as a sum of atomic contributions.
 import torch
 import argparse
 from tqdm import trange
+import numpy as np
 import torch.nn.functional as F
 from src.data import QM9DataModule
 from pytorch_lightning import seed_everything

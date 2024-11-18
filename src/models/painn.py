@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+from torch_geometric.nn import radius_graph
 
 
 class PaiNN(nn.Module):
@@ -123,10 +124,30 @@ class PaiNN(nn.Module):
 
         return E
         
-
-    # REWRITE CALCULATE Rij to matrix format where i and j are row and column number and the element is the vector (three dimensions deep)
-    
     def calculate_rij(self, atom_positions, graph_indexes, threshold):
+        # Ensure atom_positions and graph_indexes are on the correct device
+        atom_positions = atom_positions.to('cpu')
+        graph_indexes = graph_indexes.to('cpu')
+
+        # Use radius_graph to find edges within the specified radius
+        edge_index = radius_graph(atom_positions, r=threshold, batch=graph_indexes, loop=False)
+
+        # Extract indices
+        index_i = edge_index[0].to(self.device)
+        index_j = edge_index[1].to(self.device)
+
+        # Move atom_positions to the same device as indices
+        atom_positions = atom_positions.to(self.device)
+
+        # Calculate vectors
+        vectors = atom_positions[index_i] - atom_positions[index_j]
+
+        # Create adjacency matrix
+        adjacency_matrix = torch.cat([index_i.unsqueeze(1), index_j.unsqueeze(1), vectors], dim=1)
+        return adjacency_matrix
+        # REWRITE CALCULATE Rij to matrix format where i and j are row and column number and the element is the vector (three dimensions deep)
+        
+    def calculate_rij2(self, atom_positions, graph_indexes, threshold):
         #mol1: 0->1, 0->2, 0->3 ... 1->0, 1->2, 1->3 ...
         # what is missing is the index of the atoms and the adjacency matrix with 3 rows, index1, index2, vector rij.
         # Format:
