@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+from scipy.spatial import distance_matrix
 
 
 class PaiNN(nn.Module):
@@ -95,7 +96,7 @@ class PaiNN(nn.Module):
         # Calculate vector between all nodes of same graph (molecule)
         start_time = time.time()
         r = self.calculate_rij(atom_positions, graph_indexes, self.cutoff_dist)
-        print("--- %s seconds ---" % (time.time() - start_time))
+        #print("--- %s seconds ---" % (time.time() - start_time))
 
         v, s = self.message1(v_0, s_0, r)
         s_old = s + s_0 # skip connections
@@ -125,8 +126,35 @@ class PaiNN(nn.Module):
         
 
     # REWRITE CALCULATE Rij to matrix format where i and j are row and column number and the element is the vector (three dimensions deep)
-    
+    def calculate_distance_matrix(self, atom_positions):
+        atom_norm = (atom_positions ** 2).sum(dim=1, keepdim=True)  # Shape (N, 1)
+        # Use broadcasting to compute the squared distance matrix
+        dist_squared = atom_norm + atom_norm.T - 2 * torch.mm(atom_positions, atom_positions.T)
+        # Clamp to avoid numerical precision issues and take square root
+        dist = torch.sqrt(torch.clamp(dist_squared, min=0))
+        return dist
+
     def calculate_rij(self, atom_positions, graph_indexes, threshold):
+        #dist_mat = distance_matrix(atom_positions.cpu(), atom_positions.cpu())
+        dist_mat = self.calculate_distance_matrix(atom_positions)
+        dist_mask = dist_mat < self.cutoff_dist
+        #np.fill_diagonal(dist_mask, False)  # not bounded to itself
+        dist_mask = dist_mask.fill_diagonal_(0)
+
+        # set all atoms that are not in same molecule to False
+        same_molecule_mask = (graph_indexes.unsqueeze(0) == graph_indexes.unsqueeze(1))  # (num_atoms, num_atoms)
+
+        # final mask
+        #final_mask  = torch.from_numpy(dist_mask).to(self.device) & same_molecule_mask
+        final_mask  = dist_mask & same_molecule_mask
+
+        pairs = torch.argwhere(final_mask) # works both ways!
+        n_diff = atom_positions[pairs[:, 1]] - atom_positions[pairs[:, 0]]
+
+        return torch.concat([pairs, n_diff], axis=1)
+
+    
+    def calculate_rij2(self, atom_positions, graph_indexes, threshold):
         #mol1: 0->1, 0->2, 0->3 ... 1->0, 1->2, 1->3 ...
         # what is missing is the index of the atoms and the adjacency matrix with 3 rows, index1, index2, vector rij.
         # Format:
