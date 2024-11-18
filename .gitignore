@@ -4,3 +4,4 @@ data/raw/*
 *.out
 *.egg-info
 myenv/*
+src/models/.DS_Store

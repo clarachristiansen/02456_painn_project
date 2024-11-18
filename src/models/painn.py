@@ -164,11 +164,11 @@ class Message(nn.Module):
         self.r_path = nn.Sequential(
             nn.Linear(20, 384, True))
         
-    def RBF(self, r):
+    def RBF(self, r, num_rbf_features=20):
         vector_r = r[:,2:]
         norm_r = torch.linalg.norm(vector_r, axis=1).unsqueeze(1) # normalize each r vector not all into 1 number
         frac = torch.pi / self.cutoff_dist
-        n = torch.arange(1,21).float().reshape(1, 20)
+        n = torch.arange(1,num_rbf_features+1).float().reshape(1, num_rbf_features)
         epsilon = 1e-8
         rbf_result = torch.sin(n * frac * norm_r) / (norm_r + epsilon)
         return rbf_result
