@@ -22,7 +22,7 @@ def cli():
     parser.add_argument('--batch_size_train', default=100, type=int)
     parser.add_argument('--batch_size_inference', default=1000, type=int)
     parser.add_argument('--num_workers', default=0, type=int)
-    parser.add_argument('--splits', nargs=3, default=[110000, 10000, 10831], type=int) # [num_train, num_val, num_test]
+    parser.add_argument('--splits', nargs=3, default=[1100, 10000, 10831], type=int) # [num_train, num_val, num_test]
     parser.add_argument('--subset_size', default=None, type=int)
 
     # Model
@@ -88,9 +88,10 @@ def main():
     painn.train()
     pbar = trange(args.num_epochs)
     for epoch in pbar:
-
+        print(len(dm.train_dataloader()))
         loss_epoch = 0.
-        for batch in dm.train_dataloader():
+        for batch_idx, batch in enumerate(dm.train_dataloader()):
+            #print(len(batch))
             batch = batch.to(device)
 
             atomic_contributions = painn(
@@ -103,11 +104,15 @@ def main():
                 graph_indexes=batch.batch,
                 atomic_contributions=atomic_contributions,
             )
+            print(preds)
+            print(batch.y)
             loss_step = F.mse_loss(preds, batch.y, reduction='sum')
 
             loss = loss_step / len(batch.y)
+            print(f"Batch {batch_idx} Loss: {loss.item()}")
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(painn.parameters(), max_norm=1.0) 
             optimizer.step()
 
             loss_epoch += loss_step.detach().item()

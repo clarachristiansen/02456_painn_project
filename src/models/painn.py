@@ -47,11 +47,11 @@ class PaiNN(nn.Module):
         self.message1 = Message(self.num_features, self.cutoff_dist, self.device)
         self.update1 = Update(self.num_features, self.device)
 
-        self.message2 = Message(self.num_features, self.cutoff_dist, self.device)
-        self.update2 = Update(self.num_features, self.device)
-
-        self.message3 = Message(self.num_features, self.cutoff_dist, self.device)
-        self.update3 = Update(self.num_features, self.device)
+        # self.message2 = Message(self.num_features, self.cutoff_dist, self.device)
+        # self.update2 = Update(self.num_features, self.device)
+        
+        # self.message3 = Message(self.num_features, self.cutoff_dist, self.device)
+        # self.update3 = Update(self.num_features, self.device)
 
         self.last_mlp = nn.Sequential(
             nn.Linear(self.num_features, self.num_features),
@@ -105,19 +105,19 @@ class PaiNN(nn.Module):
         s_old = s + s_old # skip connections
         v_old = v + v_old
 
-        v, s = self.message2(v_old, s_old, r)
-        s_old = s + s_old # skip connections
-        v_old = v + v_old
-        v, s = self.update2(v_old, s_old)
-        s_old = s + s_old # skip connections
-        v_old = v + v_old
-
-        v, s = self.message3(v_old, s_old, r)
-        s_old = s + s_old # skip connections
-        v_old = v + v_old
-        v, s = self.update3(v_old, s_old)
-        s_old = s + s_old # skip connections
-        v_old = v + v_old
+        # v, s = self.message2(v_old, s_old, r)
+        # s_old = s + s_old # skip connections
+        # v_old = v + v_old
+        # v, s = self.update2(v_old, s_old)
+        # s_old = s + s_old # skip connections
+        # v_old = v + v_old
+        
+        # v, s = self.message3(v_old, s_old, r)
+        # s_old = s + s_old # skip connections
+        # v_old = v + v_old
+        # v, s = self.update3(v_old, s_old)
+        # s_old = s + s_old # skip connections
+        # v_old = v + v_old
 
         E = self.last_mlp(s_old)
         print("--- %s seconds ---" % (time.time() - start_time))
@@ -198,14 +198,25 @@ class Message(nn.Module):
             nn.Linear(128, 384))
         self.r_path = nn.Sequential(
             nn.Linear(20, 384, True))
+        #torch.nn.init.kaiming_normal_(self.r_path[0].weight, nonlinearity='relu')
+        #torch.nn.init.constant_(self.r_path[0].bias, 0)
         
+    # def RBF(self, r, num_rbf_features=20):
+    #     vector_r = r[:,2:]
+    #     norm_r = torch.linalg.norm(vector_r, axis=1).unsqueeze(1) # normalize each r vector not all into 1 number
+    #     frac = torch.pi / self.cutoff_dist
+    #     n = torch.arange(1,num_rbf_features + 1, device=self.device).float().reshape(1, num_rbf_features)
+    #     epsilon = 1e-8
+    #     rbf_result = torch.sin(n * frac * norm_r) / (norm_r + epsilon)
+    #     return rbf_result
+    
     def RBF(self, r, num_rbf_features=20):
-        vector_r = r[:,2:]
-        norm_r = torch.linalg.norm(vector_r, axis=1).unsqueeze(1) # normalize each r vector not all into 1 number
+        norm_r = torch.linalg.norm(r, dim=1, keepdim=True)
         frac = torch.pi / self.cutoff_dist
-        n = torch.arange(1,num_rbf_features + 1, device=self.device).float().reshape(1, num_rbf_features)
+        n = torch.arange(1, num_rbf_features + 1, device=self.device).float().reshape(1, num_rbf_features)
         epsilon = 1e-8
-        rbf_result = torch.sin(n * frac * norm_r) / (norm_r + epsilon)
+        norm_r = torch.clamp(norm_r, min=epsilon)  # Prevent division by zero
+        rbf_result = torch.sin(n * frac * norm_r) / (norm_r + epsilon)  # Avoid dividing by zero
         return rbf_result
     
     def cosine_cutoff(self, r): # OBS DONT KNOW IF IT IS CUTOFF_DISTANCE OR ANOTHER CUTOFF PARAMETER
@@ -217,8 +228,27 @@ class Message(nn.Module):
     def forward(self, v, s, r):
         js = r[:, 1].int() # r holds the following col: i, j, rx, ry, rz
         r_vectors = r[:,2:]
+        #assert not torch.isnan(r_vectors).any(), "Message: Found NaN in r_vectors"
+        #assert not (r_vectors == float('inf')).any(), "Message: Found Inf in r_vectors"
+        #assert torch.all(r_vectors.abs() < 1e4), "Message: Found extreme values in r_vectors"
+
         phi = self.s_path(s)
         W = self.cosine_cutoff(self.r_path(self.RBF(r_vectors)))
+        rbf_result = self.RBF(r_vectors)
+        rbf_result = torch.clamp(rbf_result, min=-1.0, max=1.0)  # Normalize to [-1, 1]
+        #assert not torch.isnan(rbf_result).any(), "Message: Found NaN in RBF output"
+        #assert not (rbf_result == float('inf')).any(), "Message: Found Inf in RBF output"
+        #assert torch.all(rbf_result.abs() < 1e6), "Message: Found extreme values in RBF output"
+        r_path_weights = self.r_path[0].weight  # First layer in Sequential
+        r_path_bias = self.r_path[0].bias
+        assert not torch.isnan(r_path_weights).any(), f"r_path: Found NaN in weights"
+        assert not torch.isnan(r_path_bias).any(), "r_path: Found NaN in biases"
+        assert torch.all(r_path_weights.abs() < 1e6), "r_path: Found extreme values in weights"
+
+        W = self.cosine_cutoff(self.r_path(rbf_result))
+        #assert not torch.isnan(self.RBF(r_vectors)).any(), "Message: Found NaN in tensor result RBF"
+        #assert not torch.isnan(self.r_path(self.RBF(r_vectors))).any(), "Message: Found NaN in tensor result RBF"
+        assert not torch.isnan(W).any(), "Message: Found NaN in tensor W"
 
         pre_split = phi[js, :] * W
 
@@ -231,12 +261,19 @@ class Message(nn.Module):
         right_1 = (split_3.unsqueeze(2) * (r_vectors / (torch.linalg.norm(r_vectors, axis=1).unsqueeze(1) + epsilon)).unsqueeze(1))
         left_2 = left_1 + right_1
 
+        assert not torch.isnan(left_2).any(), "Message: Found NaN in tensor left_2"
+        assert not torch.isnan(split_2).any(), "Message: Found NaN in tensor split_2"
+
         # Sum over j
         v1 = torch.zeros_like(v)
         delta_v = v1.index_add_(0, js, left_2)
 
         s1 = torch.zeros_like(s)
         delta_s = s1.index_add_(0, js, split_2)
+        assert not torch.isnan(delta_s).any(), "Message: Found NaN in tensor delta_s"
+        assert not torch.isinf(delta_s).any(), "Message: Found Inf in tensor delta_s"
+        assert not torch.isnan(delta_v).any(), "Message: Found NaN in tensor delta_v"
+        assert not torch.isinf(delta_v).any(), "Message: Found Inf in tensor delta_v"
 
         return delta_v, delta_s
 
@@ -273,6 +310,11 @@ class Update(nn.Module):
         
         dot_prod = torch.sum(Uv * Vv, dim=2) # dot product
         delta_s = dot_prod * a_sv + a_ss
+
+        assert not torch.isnan(delta_s).any(), "Update: Found NaN in tensor delta_s"
+        assert not torch.isinf(delta_s).any(), "Update: Found Inf in tensor delta_s"
+        assert not torch.isnan(delta_v).any(), "Update: Found NaN in tensor delta_v"
+        assert not torch.isinf(delta_v).any(), "Update: Found Inf in tensor delta_v"
 
         return delta_v, delta_s
 
