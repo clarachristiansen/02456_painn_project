@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from src.data import QM9DataModule
 from pytorch_lightning import seed_everything
 from src.models import PaiNN, AtomwisePostProcessing
+from src.models.painn_test import PaiNN as PaiNN
 
 
 def cli():
@@ -22,7 +23,7 @@ def cli():
     parser.add_argument('--batch_size_train', default=100, type=int)
     parser.add_argument('--batch_size_inference', default=1000, type=int)
     parser.add_argument('--num_workers', default=0, type=int)
-    parser.add_argument('--splits', nargs=3, default=[1100, 10000, 10831], type=int) # [num_train, num_val, num_test]
+    parser.add_argument('--splits', nargs=3, default=[110000, 10000, 10831], type=int) # [num_train, num_val, num_test]
     parser.add_argument('--subset_size', default=None, type=int)
 
     # Model
@@ -92,7 +93,9 @@ def main():
         loss_epoch = 0.
         for batch_idx, batch in enumerate(dm.train_dataloader()):
             #print(len(batch))
+            
             batch = batch.to(device)
+            #print('LABEL:', batch.y)
 
             atomic_contributions = painn(
                 atoms=batch.z,
@@ -104,8 +107,8 @@ def main():
                 graph_indexes=batch.batch,
                 atomic_contributions=atomic_contributions,
             )
-            print(preds)
-            print(batch.y)
+            #print(preds)
+            
             loss_step = F.mse_loss(preds, batch.y, reduction='sum')
 
             loss = loss_step / len(batch.y)
