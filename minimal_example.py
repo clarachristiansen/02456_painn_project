@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from src.data import QM9DataModule
 from pytorch_lightning import seed_everything
 from src.models import PaiNN, AtomwisePostProcessing
+from src.models.painn_test import PaiNN as PaiNN
 
 
 def cli():
@@ -88,10 +89,13 @@ def main():
     painn.train()
     pbar = trange(args.num_epochs)
     for epoch in pbar:
-
+        print(len(dm.train_dataloader()))
         loss_epoch = 0.
-        for batch in dm.train_dataloader():
+        for batch_idx, batch in enumerate(dm.train_dataloader()):
+            #print(len(batch))
+            
             batch = batch.to(device)
+            #print('LABEL:', batch.y)
 
             atomic_contributions = painn(
                 atoms=batch.z,
@@ -103,11 +107,15 @@ def main():
                 graph_indexes=batch.batch,
                 atomic_contributions=atomic_contributions,
             )
+            #print(preds)
+            
             loss_step = F.mse_loss(preds, batch.y, reduction='sum')
 
             loss = loss_step / len(batch.y)
+            print(f"Batch {batch_idx} Loss: {loss.item()}")
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(painn.parameters(), max_norm=1.0) 
             optimizer.step()
 
             loss_epoch += loss_step.detach().item()
