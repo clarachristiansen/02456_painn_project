@@ -9,8 +9,8 @@ from tqdm import trange
 import torch.nn.functional as F
 from src.data import QM9DataModule
 from pytorch_lightning import seed_everything
-from src.models import PaiNN, AtomwisePostProcessing
-from src.models.painn_test import PaiNN as PaiNN
+from src.models import AtomwisePostProcessing
+from src.models.painn import PaiNN # this is the working one!
 
 
 def cli():
@@ -42,11 +42,20 @@ def cli():
     args = parser.parse_args()
     return args
 
+def get_device():
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available():
+        return 'mps'
+    else:
+        return 'cpu'
+
 
 def main():
     args = cli()
     seed_everything(args.seed)
-    device = 'mps'# if torch.cuda.is_available() else 'cpu'
+    device = get_device()
+    print(device)
 
     dm = QM9DataModule(
         target=args.target,
