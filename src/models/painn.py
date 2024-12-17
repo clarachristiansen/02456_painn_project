@@ -63,10 +63,10 @@ class MessageBlock(nn.Module):
         dv = a_vv.unsqueeze(-1) * Uv
         
         dot_prod = torch.sum(Uv * Vv, dim=2) # dot product
-        delta_s = dot_prod * a_sv + a_ss
+        ds = dot_prod * a_sv + a_ss
         
-        s = s + delta_s
-        v = v + delta_v
+        s = s + ds
+        v = v + dv
 
         return s, v
 
@@ -159,6 +159,7 @@ class PaiNN(nn.Module):
         i_index, j_index = build_edge_index(atom_positions, self.cutoff_dist, graph_indexes)
         r_ij = atom_positions[j_index] - atom_positions[i_index] # Check
         distance = torch.linalg.norm(r_ij, axis=1, keepdim=True)
+        #distance = torch.clamp(distance, min=1e-8)
         rbf = self.rbf(distance.squeeze())
         r_ij_direction = r_ij / (distance + 1e-8)
         # Message passing
