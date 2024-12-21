@@ -35,12 +35,12 @@ class MessageBlock(nn.Module):
 
     def forward(self, s, v, i_index, j_index, rbf, r_ij_direction):
         # Message 
-        phi = self.phi_path(s)
-        W = self.cutoff_function(self.W_path(rbf))
-        split = phi[j_index] * W # i_index
-        Ws, Wvs, Wvv = torch.split(split, self.num_features, dim=-1)
+        phi = self.phi_path(s[j_index]) # [620, 384]
+        W = self.cutoff_function(self.W_path(rbf)) #[620, 384]
+        split = phi * W # i_index [620, 384]
+        Ws, Wvs, Wvv = torch.split(split, self.num_features, dim=-1) # 3 * [620, 128]
         
-        delta_v_all = Wvs.unsqueeze(-1) * r_ij_direction.unsqueeze(1) + Wvv.unsqueeze(-1) * v[j_index] # right and left path
+        delta_v_all = Wvs.unsqueeze(-1) * r_ij_direction.unsqueeze(1) + Wvv.unsqueeze(-1) * v[j_index] # right and left path [620, 128, 3]
         
         delta_v = torch.zeros_like(v)
         delta_v = delta_v.index_add_(0, i_index, delta_v_all)
@@ -157,7 +157,7 @@ class PaiNN(nn.Module):
         s = self.embedding(atoms)
         v = torch.zeros((atoms.shape[0], self.num_features, 3), device=self.device) 
         i_index, j_index = build_edge_index(atom_positions, self.cutoff_dist, graph_indexes)
-        r_ij = atom_positions[j_index] - atom_positions[i_index] # Check
+        r_ij = atom_positions[j_index] - atom_positions[i_index]
         distance = torch.linalg.norm(r_ij, axis=1, keepdim=True)
         #distance = torch.clamp(distance, min=1e-8)
         rbf = self.rbf(distance.squeeze())
@@ -170,12 +170,6 @@ class PaiNN(nn.Module):
         #print(E)
         return E
         
-
-        
-        
-
-    
-
 
 def build_edge_index(atom_positions, cutoff_distance, graph_indexes):
     edge_index =radius_graph(atom_positions, r=cutoff_distance, batch=graph_indexes, flow='target_to_source')
